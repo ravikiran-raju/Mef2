@@ -1,0 +1,58 @@
+#!/usr/bin/env Rscript
+
+#Combine all featureCounts tables into one master table
+temp <- list.files(path = "/Users/ravikiranraju/Desktop/171107RNA_EENHSI/STARmethod/featuresCount_noO/", pattern = "^GENEfeatures", full.names = TRUE)
+for (i in temp){  sampletable <- read.table(i, sep="\t", header=T)
+  colnames(sampletable) <- c("Geneid","Chr","Start","End","Strand","Length","Counts")
+  sampletable_filter <- sampletable[sampletable$Counts >= 20,]
+  sampletable_filter$Chr <- paste("chr",sampletable_filter$Chr,sep="")
+  samplebed <- cbind(sampletable_filter$Chr, sampletable_filter$Start, sampletable_filter$End)
+  file <- paste(i,"expressedgenes.bed")
+  write.table(samplebed, file=file, quote=FALSE, col.names = FALSE, row.names = FALSE, sep="\t")
+}
+mastertable <- read.table(temp[1], sep="\t", header=T, row.names=1)
+mastertable <- mastertable[,1:5]
+for (i in temp) {
+  sampletable <- read.table(i, sep="\t", header=T)
+  sampletable <- sampletable[,7, drop=FALSE]
+  mastertable <- cbind(mastertable, sampletable)
+}
+names(mastertable) <- gsub("X171107Tsa_","",names(mastertable), fixed = TRUE)
+names(mastertable) <- gsub("Aligned.sortedByCoord.out.bam","",names(mastertable), fixed=TRUE)
+names(mastertable) <- c("Chr","Start","End","Strand","Length","E2-202001","E3-202002","E4-202003","E5-202004","E6-202005","E7-202006","N1-202007","N2-202008","N3-202009","N4-202010","N5-202011","N7-202012","S2-202013","S3-202014","S4-202015","S5-202016","S6-202017","S7-202018")
+write.table(mastertable,"/Users/ravikiranraju/Documents/Tsai/RNA-seq/171107RNA_EENHSI/STARmethod/featuresCount_noO/171107Tsa_allsamples_featureCounts_bygene_noOverlap.txt", sep="\t", quote=FALSE, col.names=TRUE)
+EENHcounts <- apply(mastertable[,c(6:17)],2, as.numeric)
+row.names(EENHcounts) <- row.names(mastertable)
+
+#DESEQ2 differentially expressed gene analysis. Requires input of sample table csv with sample names and conditions
+library(DESeq2)
+library(IHW)
+library(RColorBrewer)
+library(pheatmap)
+library(fdrtool)
+
+sampledata <- read.table("/Users/ravikiranraju/Desktop/171107RNA_EENHSI/STARmethod/featuresCount_noO/sampletable_171107Tsa_EENHonly.csv", sep=",", header=T, row.names = 1)
+row.names(sampledata) <- colnames(EENHcounts)
+dds <- DESeqDataSetFromMatrix(countData = EENHcounts, colData = sampledata, design = ~Condition)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+dds <- DESeq(dds)
+resultsNames(dds)
+
+DESeq2Res <- results(dds, name="Condition_NormalHousing_vs_Enriched")
+summary(DESeq2Res)
+hist(DESeq2Res$pvalue, col = "lavender", main = "Normal Housing vs. Enriched", xlab = "p-values")
+plotMA(DESeq2Res)
+
+DESeq2Res <- DESeq2Res[ !is.na(DESeq2Res$pvalue), ]
+DESeq2Res <- DESeq2Res[, -which(names(DESeq2Res) == "padj")]
+FDR.DESeq2Res <- fdrtool(DESeq2Res$stat, statistic= "normal", plot = T)
+DESeq2Res[,"padj"]  <- p.adjust(FDR.DESeq2Res$pval, method = "BH")
+hist(FDR.DESeq2Res$pval, col = "royalblue4", 
+     main = "Normal Housing vs Enriched, correct null model", xlab = "CORRECTED p-values")
+summary(DESeq2Res, alpha = 0.1)
+plotMA(DESeq2Res, alpha = 0.05)
+
+hist(DESeq2Res$pvalue, col = "lavender", main = "Normal Housing vs. Enriched", xlab = "p-values")
+
+DESeq2Res_padj <- subset(DESeq2Res, padj < 0.1)
+write.csv(as.data.frame(DESeq2Res), file="/Users/ravikiranraju/Desktop/171107RNA_EENHSI/STARmethod/featuresCount_noO/171107Tsa_RNA_EEvsNH_DESEQ2_ALLROWS.csv")

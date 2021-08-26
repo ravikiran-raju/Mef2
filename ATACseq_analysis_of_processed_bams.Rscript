@@ -1,0 +1,38 @@
+#!/usr/bin/env Rscript
+
+#load library and set working directory
+library("DiffBind")
+setwd("/n/data2/bch/medicine/kourembanas/rmr15/170125TsaC/NeuN")
+
+peakData <- dba(sampleSheet="diffbind_170125TsaC_NeuN_noDS_EEvsNH.csv")
+peakData
+countData <- dba.count(peakData)
+countData
+contrastData <- dba.contrast(countData, categories=DBA_CONDITION)
+analysisData <- dba.analyze(contrastData, method=DBA_EDGER_CLASSIC)
+
+#orig - write tables of raw counts and normalized peaks that DiffBind used for analysis
+counts <- dba.peakset(countData, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+write.table(counts, file="170125TsaC_NeuN_noDS_EEvsNH_DIFFBIND_peakuniverse_TMM_countmatrix.txt", quote=FALSE, sep="\t", col.names = TRUE) 
+EENHdiffsites <- dba.report(analysisData, method=DBA_EDGER_CLASSIC, th=0.1)
+write.table(EENHdiffsites, file="170125TsaC_NeuN_noDS_EEvsNH_differentialsites_DIFFBIND.txt",quote=FALSE,sep="\t", col.names = TRUE)
+
+
+#orig - PDFs to summmarize data analysis
+pdf("170125TsaC_NeuN_noDS_EEvsNH_summary_edgeRclassic.pdf", onefile=T)
+dba.plotPCA(countData, DBA_CONDITION,label=DBA_ID, labelSize=0.4)
+plot(peakData)
+dba.plotHeatmap(peakData, correlations=FALSE, key=TRUE)
+plot(countData)
+dba.plotHeatmap(countData, correlations=FALSE, key=TRUE)
+dba.plotVolcano(analysisData, method = DBA_EDGER_CLASSIC, th=0.1)
+dba.plotMA(analysisData, method=DBA_EDGER_CLASSIC, th=0.1)
+dba.plotVolcano(analysisData, method = DBA_EDGER_CLASSIC, th=0.05)
+dba.plotMA(analysisData, method=DBA_EDGER_CLASSIC, th=0.05)
+dba.plotHeatmap(analysisData, th=0.1, method=DBA_EDGER_CLASSIC, correlations=FALSE)
+dev.off()	
+
+rawcountData <- dba.count(peakData, score=DBA_SCORE_READS)
+rawcounts <- dba.peakset(rawcountData, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+write.table(rawcounts, file="170125TsaC_NeuN_noDS_EEvsNH_DIFFBIND_peakuniverse_rawcounts_countmatrix.txt", quote=FALSE, sep="\t", col.names = TRUE)
+save.image("170125TsaC_NeuN_noDS_NHvsSI_DIFFBINDanalysis.RData")

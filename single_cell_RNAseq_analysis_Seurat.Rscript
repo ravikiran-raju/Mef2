@@ -1,0 +1,182 @@
+#!/usr/bin/env Rscript
+
+require(Matrix)
+require(Seurat)
+require(ggplot2) 
+
+#!/usr/bin/env Rscript
+
+#Need to load gcc, R and python!
+#Done using interactive node
+
+require(Matrix)
+require(Seurat)
+require(ggplot2) 
+require(reticulate)
+require(DoubletFinder)
+use_python("~/mypython_3.6.0/myvirtualenv/bin/python")
+
+setwd("/n/data2/bch/medicine/kourembanas/rmr15/Combined_scCGR_190930Tsa_190221Tsa/pre_mrna/Seruat")
+
+data <- Read10X(data.dir="/n/data2/bch/medicine/kourembanas/rmr15/Combined_scCGR_190930Tsa_190221Tsa/pre_mrna/Aggregate_190221_190930TsaA_No_Normalization/outs/filtered_feature_bc_matrix")
+
+#figure out which cells will be filtered out based on mito percentage
+raw.cogres <- CreateSeuratObject(counts = data, project = "CogReserve", min.cells = 3, min.features = 200)
+raw.cogres[["percent.mt"]] <- PercentageFeatureSet(raw.cogres, pattern = "^MT-")
+mito.k2 <- kmeans(raw.cogres@meta.data$percent.mt, 2) 
+raw.cogres <- AddMetaData(raw.cogres, mito.k2$cluster, "mito.k2")
+raw.cogres <- subset(raw.cogres, subset = mito.k2 == "1")
+low.mito.cells <- colnames(raw.cogres)
+
+
+#create finalized matrix 
+load("/home/rmr15/Human.EnsemblGenes.GRCh38.p10.GRanges.RData")
+GRCh38 <- Human.EnsemblGenes.GRCh38.p10.GRanges
+GRCh38table <- as.data.frame(GRCh38)
+Prot.code.gene.annots <- as.data.frame(GRCh38[GRCh38$Gene.type=="protein_coding"])
+mito.protein <- Prot.code.gene.annots[Prot.code.gene.annots$seqnames != "chrM",]
+indcs <- which(rownames(data) %in% mito.protein$Gene.name)
+filtered.data <- data[indcs, , drop=F]
+cell <- which(colnames(filtered.data) %in% low.mito.cells)
+final.data.matrix <- filtered.data[ ,cell, drop = F]
+saveRDS(final.data.matrix,"RawDataMatrix_filtered_proteincoding_noMT_lowMitoCells.rds")
+
+
+
+#create Seurat object filtered for low mitochondrial reads and protein coding matrix and add metadata 
+cogres <- CreateSeuratObject(counts = final.data.matrix, project = "CogReserve", min.cells = 3, min.features = 200)
+
+cogres[["patient"]]=factor(unlist(lapply(rownames(cogres@meta.data), function(j){gsub(".*-", "", j)})))
+
+key<-read.csv("Combined_scCGR_190930Tsa_090221Tsa_key_seruat_metadata.csv")
+key_ids<-key$projid
+key_cog<-key$cog
+
+cogres[["projid"]]=factor(unlist(lapply(rownames(cogres@meta.data), function(j){
+  a<-gsub(".*-", "", j)
+  b<-as.numeric(a)
+  id_long=key_ids[b]
+  id=as.numeric(substr(id_long,5,8))
+
+  return (id)
+})))
+
+
+cogres[["cog"]]=factor(unlist(lapply(rownames(cogres@meta.data), function(j){
+  a<-gsub(".*-", "", j)
+  b<-as.numeric(a)
+  id=toString(key_cog[b])
+  return (id)
+})))
+
+
+
+saveRDS(cogres,"Seurat_allpatients_pre_normalization.rds")
+
+#Seurat Processing
+cogres <- NormalizeData(cogres)
+cogres <- FindVariableFeatures(cogres)
+cogres <- ScaleData(cogres)
+cogres <- RunPCA(cogres)
+
+elbow <- ElbowPlot(cogres, ndims = 50)
+ggsave("Elbow_PCMfiltered_VariableGenes.png",elbow,dpi=600, scale=3)
+
+cogres <- FindNeighbors(cogres, dims = 1:12)
+cogres <- FindClusters(cogres, resolution = 0.05)
+cogres <- RunUMAP(cogres, dims = 1:12) 
+
+UMAP1<-DimPlot(cogres, reduction = "umap")
+ggsave("UMAP_allpts.pdf", UMAP1, dpi=900, scale=3)
+
+##UMAP by patient
+UMAP_patient<-DimPlot(cogres, reduction="umap", split.by="projid", ncol=4)
+ggsave("patient_UMAP_allpts.pdf", UMAP_patient, dpi=900, scale=3)
+
+
+
+#Based on UMAP by patient, need to exclude projids: 1988, 8523, 5860. So reload, prenormalization Seurat object, remove patients and then normalize. 
+#rm(cogres)
+#cogres <- readRDS("Seurat_allpatients_pre_normalization.rds")
+Idents(cogres)<-"projid"
+cogres=subset(cogres, idents=c(847,1608,2039,2428,2974,3010,4274,5218,5564,6435,6768,7403,8206,8652,8886,8992,9020,9740,9834))
+cogres <- NormalizeData(cogres)
+cogres <- FindVariableFeatures(cogres)
+cogres <- ScaleData(cogres)
+cogres <- RunPCA(cogres)
+
+elbow <- ElbowPlot(cogres, ndims = 50)
+ggsave("Elbow_PCMfiltered_3PtsRemoved_VariableGenes.pdf",elbow,dpi=600, scale=3)
+
+#Needed to play with dims and resolution to find appropriate clustering. With dims 1:12 and res 0.05, obtained 9 clusters, but don't seem to be the most meaningful separations. Dims 1:12 and res 0.07 resulted in 12 clusters. Dims 1:10 and res 0.05 (old settings), gave 8 clusters. Dims 1:10 and res 0.025 gave 6 clusters (FINAL chocie, reflected in code below)
+cogres <- FindNeighbors(cogres, dims = 1:10)
+cogres <- FindClusters(cogres, resolution = 0.025)
+cogres <- RunUMAP(cogres, dims = 1:10) 
+
+#Plots for Visualization of clustering and cluster markers 
+UMAP1<-DimPlot(cogres, reduction = "umap")
+ggsave("UMAP_dims1_10_res_0.025_3PtsRemoved.pdf", UMAP1, dpi=900, scale=3)
+
+UMAP_patient<-DimPlot(cogres, reduction="umap", split.by="projid", ncol=4)
+ggsave("patient_UMAP_dims1_10_res_0.025_3PtsRemoved.pdf", UMAP_patient, dpi=900, scale=3)
+
+neuron.features <- FeaturePlot(cogres, features = c("SNAP25","SLC17A7","CAMK2A","GAD1","GAD2"))
+ggsave("UMAP_dim1_10_res0.025_3PtsRemoved_neuron_features.pdf", neuron.features, dpi=600, scale=3)
+
+olig.features <- FeaturePlot(cogres, features = c("MBP","MOBP","PLP1","PDGFRA","VCAN","CSPG4"))
+ggsave("UMAP_dim1_10_res0.025_3PtsRemoved_olig_features.pdf", olig.features, dpi=600, scale=3)
+
+MicAstro.features <- FeaturePlot(cogres, features = c("CD74","CSF1R","C3","AQP4","GFAP"))
+ggsave("UMAP_dim1_10_res0.025_3PtsRemoved_MicAstro_features.pdf", MicAstro.features)
+
+Interneuron.features <- FeaturePlot(cogres, features = c("PVALB","SST","VIP"))
+ggsave("UMAP_dim1_10_res0.025_3PtsRemoved_Interneuron_features.pdf", Interneuron.features)
+
+random.features <- FeaturePlot(cogres, features = c("PDGFRB","FLT1","CLDN5"))
+ggsave("UMAP_dim1_10_res0.025_3PtsRemoved_Endothelial_Pericyte_features.pdf", random.features)
+
+#cogres.markers <- FindAllMarkers(cogres)
+#saveRDS(cogres.markers, file="cogres_res_0_05_cluster_markers.rds")
+
+
+saveRDS(cogres,"UMAPprocessed_dims1_10_res0.025_Seurat_3PtsRemoved_preDF.rds")
+
+
+
+#Doublet Finder to remove doublets
+pK determination done in interactive mode. Optimal pK is 0.22 
+sweep.res.list <- paramSweep_v3(cogres, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+homotypic.prop <- modelHomotypic(cogres@meta.data$seurat_clusters)
+nExp_poi <- round(0.046*nrow(cogres@meta.data))
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+
+#Round 1 DF
+cogres <- doubletFinder_v3(cogres, PCs = 1:10, pN = 0.25, pK = 0.22, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+
+#Round 2 DF
+#cogres <- doubletFinder_v3(cogres, PCs = 1:10, pN = 0.25, pK = 0.22, nExp = nExp_poi.adj, reuse.pANN = "pANN_0.25_0.05_4456", sct = FALSE)
+
+saveRDS(cogres, file = "UMAPprocessed_dims1_10_res0.025_Seurat_3PtsRemoved_DFround1.rds")
+
+cogres@meta.data[,"DF_hi.lo"] <- cogres@meta.data$DF.classifications_0.25_0.05_4456
+cogres@meta.data$DF_hi.lo[which(cogres@meta.data$DF_hi.lo == "Doublet" & #cogres@meta.data$DF.classifications_0.25_0.05_2915 == "Singlet")] <- "Doublet_lo"
+cogres@meta.data$DF_hi.lo[which(cogres@meta.data$DF_hi.lo == "Doublet")] <- "Doublet_hi"
+
+doublets <- DimPlot(cogres, group.by="DF_hi.lo", plot.order=c("Doublet_hi","Doublet_lo","Singlet"), colors.use=c("black","gold","red"))
+
+ggsave("Doublets_plot.pdf",doublets)
+
+cogres.final <- subset(cogres, subset = DF_hi.lo == "Singlet")
+
+
+#Differential analysis after Doublet Finder performed
+cogres <- readRDS("UMAPprocessed_dims1_10_res0.025_Seurat_3PtsRemoved_DoubletsRemoved_FINAL.rds")
+cogres <- subset(cogres, subset = projid != "9834")
+exc.cogres <- subset(cogres, subset = seurat_clusters == "0")
+
+Idents(exc.cogres) <- "cog"
+cgr.markers.exc <- FindMarkers(exc.cogres, features = c("MEF2A","MEF2C"), ident.1 = "HC",ident.2 = "LC", logfc.threshold = 0)
+
